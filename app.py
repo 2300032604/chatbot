@@ -1,10 +1,9 @@
 import re
 import streamlit as st
 from PyPDF2 import PdfReader
-from sentence_transformers import SentenceTransformer
 from deep_translator import GoogleTranslator
-import faiss
-import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 st.set_page_config(
     page_title="Multilingual Citizen Service Chatbot",
@@ -12,211 +11,133 @@ st.set_page_config(
     layout="wide"
 )
 
-st.markdown("""
-<style>
-.stApp {
-    background-color: #212121;
-    color: white;
-}
-.chat-title {
-    text-align: center;
-    font-size: 32px;
-    font-weight: bold;
-    margin-top: 20px;
-}
-.chat-subtitle {
-    text-align: center;
-    color: #b4b4b4;
-    margin-bottom: 30px;
-}
-.user-msg {
-    background: #2f2f2f;
-    padding: 15px;
-    border-radius: 18px;
-    margin: 10px 0 10px auto;
-    max-width: 70%;
-}
-.bot-msg {
-    background: #303030;
-    padding: 15px;
-    border-radius: 18px;
-    margin: 10px auto 10px 0;
-    max-width: 75%;
-}
-.source-box {
-    background: #171717;
-    border-left: 4px solid #10a37f;
-    padding: 12px;
-    border-radius: 10px;
-    margin-top: 10px;
-    color: #d1d5db;
-}
-.stTextInput input {
-    background-color: #303030;
-    color: white;
-    border-radius: 25px;
-    padding: 15px;
-    border: 1px solid #555;
-}
-.stFileUploader {
-    background: #2f2f2f;
-    padding: 15px;
-    border-radius: 15px;
-}
-</style>
-""", unsafe_allow_html=True)
+st.title("💬 Multilingual Citizen Service Chatbot")
+st.write("Upload a PDF and ask questions from the document.")
 
-st.markdown("<div class='chat-title'>💬 Multilingual Citizen Service Chatbot</div>", unsafe_allow_html=True)
-st.markdown("<div class='chat-subtitle'>Upload an official PDF and ask questions like ChatGPT</div>", unsafe_allow_html=True)
-
-@st.cache_resource
-def load_model():
-    return SentenceTransformer("all-MiniLM-L6-v2")
-
-model = load_model()
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-if "index" not in st.session_state:
-    st.session_state.index = None
-
-if "chunks" not in st.session_state:
-    st.session_state.chunks = []
-
-with st.sidebar:
-    st.header("📄 Upload Dataset")
-    pdf = st.file_uploader("Upload PDF", type="pdf")
-
-    st.markdown("---")
-    st.write("### Supported Languages")
-    st.write("English")
-    st.write("Telugu")
-    st.write("Hindi")
-    st.write("Tamil")
-    st.write("Kannada")
-
-def process_pdf(pdf):
-    text = ""
-
+def extract_text(pdf):
     reader = PdfReader(pdf)
+    text = ""
 
     for page in reader.pages:
         page_text = page.extract_text()
         if page_text:
             text += page_text + " "
 
-    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\s+", " ", text).strip()
 
+def create_chunks(text, chunk_size=800):
     chunks = []
-    chunk_size = 800
 
     for i in range(0, len(text), chunk_size):
         chunk = text[i:i + chunk_size].strip()
         if len(chunk) > 100:
             chunks.append(chunk)
 
-    embeddings = model.encode(chunks, convert_to_numpy=True)
+    return chunks
 
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(embeddings.astype("float32"))
+def translate_to_english(question):
+    try:
+        return GoogleTranslator(source="auto", target="en").translate(question)
+    except:
+        return question
 
-    return chunks, index
+def translate_answer(answer, lang):
+    if lang == "English":
+        return answer
+
+    code = {
+        "Telugu": "te",
+        "Hindi": "hi",
+        "Tamil": "ta",
+        "Kannada": "kn"
+    }[lang]
+
+    try:
+        return GoogleTranslator(source="en", target=code).translate(answer)
+    except:
+        return answer
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "chunks" not in st.session_state:
+    st.session_state.chunks = []
+
+if "vectorizer" not in st.session_state:
+    st.session_state.vectorizer = None
+
+if "vectors" not in st.session_state:
+    st.session_state.vectors = None
+
+with st.sidebar:
+    st.header("📄 Upload Dataset")
+    pdf = st.file_uploader("Upload PDF", type="pdf")
+
+    language = st.selectbox(
+        "Answer Language",
+        ["English", "Telugu", "Hindi", "Tamil", "Kannada"]
+    )
 
 if pdf:
-    if (
-        "processed_pdf" not in st.session_state
-        or st.session_state.processed_pdf != pdf.name
-    ):
+    if "processed_pdf" not in st.session_state or st.session_state.processed_pdf != pdf.name:
         with st.spinner("Reading and indexing PDF..."):
-            chunks, index = process_pdf(pdf)
+            text = extract_text(pdf)
+
+            if not text:
+                st.error("No readable text found in PDF.")
+                st.stop()
+
+            chunks = create_chunks(text)
+
+            vectorizer = TfidfVectorizer(stop_words="english")
+            vectors = vectorizer.fit_transform(chunks)
 
             st.session_state.chunks = chunks
-            st.session_state.index = index
+            st.session_state.vectorizer = vectorizer
+            st.session_state.vectors = vectors
             st.session_state.processed_pdf = pdf.name
             st.session_state.messages = []
 
         st.sidebar.success("PDF processed successfully!")
 
 for msg in st.session_state.messages:
-    if msg["role"] == "user":
-        st.markdown(f"<div class='user-msg'><b>You:</b><br>{msg['content']}</div>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<div class='bot-msg'><b>Assistant:</b><br>{msg['content']}</div>", unsafe_allow_html=True)
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
 
 question = st.chat_input("Ask anything from your uploaded document...")
 
 if question:
-    if st.session_state.index is None:
-        st.warning("Please upload a PDF dataset first.")
+    if st.session_state.vectors is None:
+        st.warning("Please upload a PDF first.")
     else:
-        st.session_state.messages.append({
-            "role": "user",
-            "content": question
-        })
+        st.session_state.messages.append({"role": "user", "content": question})
 
-        st.markdown(f"<div class='user-msg'><b>You:</b><br>{question}</div>", unsafe_allow_html=True)
+        with st.chat_message("user"):
+            st.write(question)
 
-        try:
-            question_en = GoogleTranslator(
-                source="auto",
-                target="en"
-            ).translate(question)
-        except:
-            question_en = question
+        question_en = translate_to_english(question)
 
-        q_embedding = model.encode(
-            [question_en],
-            convert_to_numpy=True
-        )
+        q_vector = st.session_state.vectorizer.transform([question_en])
+        scores = cosine_similarity(q_vector, st.session_state.vectors).flatten()
 
-        distances, indices = st.session_state.index.search(
-            q_embedding.astype("float32"),
-            3
-        )
+        top_indexes = scores.argsort()[::-1][:3]
 
-        retrieved_chunks = [
-            st.session_state.chunks[i]
-            for i in indices[0]
-            if i < len(st.session_state.chunks)
-        ]
+        if scores[top_indexes[0]] < 0.01:
+            answer = "No relevant answer found in the uploaded document."
+            sources = []
+        else:
+            answer = " ".join([st.session_state.chunks[i] for i in top_indexes])
+            answer = translate_answer(answer, language)
+            sources = top_indexes
 
-        answer = retrieved_chunks[0]
+        st.session_state.messages.append({"role": "assistant", "content": answer})
 
-        try:
-            Telugu = GoogleTranslator(source="en", target="te").translate(answer)
-            Hindi = GoogleTranslator(source="en", target="hi").translate(answer)
-        except:
-            Telugu = answer
-            Hindi = answer
+        with st.chat_message("assistant"):
+            st.write(answer)
 
-        final_answer = f"""
-{answer}
-
-<br><br><b>తెలుగు:</b><br>{Telugu}
-
-<br><br><b>हिन्दी:</b><br>{Hindi}
-"""
-
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": final_answer
-        })
-
-        st.markdown(
-            f"<div class='bot-msg'><b>Assistant:</b><br>{final_answer}</div>",
-            unsafe_allow_html=True
-        )
-
-        with st.expander("📖 Retrieved Source Chunks"):
-            for i, chunk in enumerate(retrieved_chunks, start=1):
-                st.markdown(
-                    f"""
-                    <div class='source-box'>
-                    <b>Source {i}</b><br><br>
-                    {chunk}
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+            if len(sources) > 0:
+                with st.expander("📖 Source Chunks"):
+                    for i in sources:
+                        st.write(f"Score: {round(scores[i], 4)}")
+                        st.write(st.session_state.chunks[i])
+                        st.write("---")
