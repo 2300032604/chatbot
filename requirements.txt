@@ -1,2 +1,8 @@
 streamlit
 PyPDF2
+sentence-transformers
+deep-translator
+langdetect
+faiss-cpu
+numpy
+torch
