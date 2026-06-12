@@ -1,204 +1,141 @@
+import re
 import streamlit as st
 from PyPDF2 import PdfReader
+from sentence_transformers import SentenceTransformer
+from deep_translator import GoogleTranslator
+from langdetect import detect
+import faiss
+import numpy as np
 
 st.set_page_config(
-    page_title="S.NO-362 Citizen Service Chatbot",
-    page_icon="🏛️",
+    page_title="Multilingual Citizen Service Chatbot",
     layout="wide"
 )
 
-st.markdown("""
-<style>
-.stApp {
-    background: linear-gradient(135deg, #0f172a, #111827);
-    color: white;
-}
-.main-box {
-    background: rgba(255,255,255,0.08);
-    padding: 25px;
-    border-radius: 16px;
-    box-shadow: 0 0 25px rgba(0,0,0,0.4);
-}
-.source-box {
-    background: rgba(56,189,248,0.12);
-    padding: 15px;
-    border-radius: 12px;
-    margin-top: 12px;
-}
-h1, h2, h3 {
-    color: white;
-}
-.stTextInput input {
-    border-radius: 12px;
-}
-.stFileUploader {
-    background: rgba(255,255,255,0.05);
-    padding: 20px;
-    border-radius: 15px;
-}
-</style>
-""", unsafe_allow_html=True)
+st.title("📄 Multilingual Citizen Service Chatbot")
+st.write("Upload a PDF and ask questions in any language.")
 
-st.markdown(
-    "<h1 style='text-align:center;'>🏛️ Multilingual Citizen-Service Chatbot</h1>",
-    unsafe_allow_html=True
-)
+@st.cache_resource
+def load_model():
+    return SentenceTransformer("all-MiniLM-L6-v2")
 
-st.markdown(
-    "<p style='text-align:center;font-size:18px;'>S.NO-362 | Ask questions from official documents</p>",
-    unsafe_allow_html=True
-)
-
-translation_keywords = {
-    "జనన ధృవీకరణ": "birth certificate",
-    "పుట్టిన సర్టిఫికేట్": "birth certificate",
-    "రేషన్ కార్డు": "ration card",
-    "పెన్షన్": "pension",
-    "ఫిర్యాదు": "grievance complaint",
-    "आय प्रमाण पत्र": "income certificate",
-    "राशन कार्ड": "ration card",
-    "पेंशन": "pension",
-    "शिकायत": "grievance complaint",
-    "आधार": "aadhaar"
-}
-
-blocked_keywords = [
-    "hack",
-    "bypass",
-    "fake document",
-    "forge certificate",
-    "delete records",
-    "leak data",
-    "admin password"
-]
-
-def extract_text(file):
-    if file.name.endswith(".pdf"):
-        reader = PdfReader(file)
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text() or ""
-        return text
-
-    return file.read().decode("utf-8", errors="ignore")
-
-
-def normalize_query(question):
-    q = question.lower()
-
-    for key, value in translation_keywords.items():
-        if key.lower() in q:
-            q += " " + value
-
-    return q
-
-
-def guardrail_check(question):
-    q = question.lower()
-
-    for word in blocked_keywords:
-        if word in q:
-            return False
-
-    return True
-
-
-def search_answer(text, question):
-    question = normalize_query(question)
-
-    paragraphs = text.split("\n")
-    words = question.lower().split()
-    scored = []
-
-    for para in paragraphs:
-        score = sum(1 for w in words if w in para.lower())
-
-        if score > 0 and len(para.strip()) > 20:
-            scored.append((score, para))
-
-    scored.sort(reverse=True)
-
-    if not scored:
-        return "No matching answer found in the uploaded official document.", []
-
-    answer = "\n\n".join([p for s, p in scored[:5]])
-    sources = scored[:5]
-
-    return answer, sources
-
-
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    st.markdown("### 📤 Upload Official Document")
-    uploaded_file = st.file_uploader(
-        "Choose PDF or TXT file",
-        type=["pdf", "txt"]
+@st.cache_data
+def create_embeddings(chunks):
+    return model.encode(
+        chunks,
+        convert_to_numpy=True
     )
 
-with col2:
-    st.markdown("### 🌐 Select Language")
-    language = st.selectbox(
-        "Response Language",
-        ["English", "Hindi", "Telugu"]
-    )
+model = load_model()
 
-    st.markdown("### ✅ Features")
-    st.write("✅ PDF/TXT official document upload")
-    st.write("✅ English, Hindi, Telugu keyword support")
-    st.write("✅ Citizen-service question answering")
-    st.write("✅ Safety guardrail")
-    st.write("✅ Source context display")
+pdf = st.file_uploader("Upload PDF", type="pdf")
 
-if uploaded_file:
-    text = extract_text(uploaded_file)
+if pdf:
 
-    if not text.strip():
-        st.error("No readable text found in this document.")
-        st.stop()
+    # Process PDF only once
+    if (
+        "processed_pdf" not in st.session_state
+        or st.session_state.processed_pdf != pdf.name
+    ):
 
-    st.success("✅ Official document uploaded successfully!")
+        with st.spinner("Reading and indexing PDF..."):
 
-    question = st.text_input("🔎 Ask your citizen-service question")
+            text = ""
 
-    if question:
-        if not guardrail_check(question):
-            st.error("Request refused because it violates citizen-service safety rules.")
-        else:
-            answer, sources = search_answer(text, question)
+            reader = PdfReader(pdf)
 
-            if language == "Hindi":
-                final_answer = "आधिकारिक दस्तावेजों के आधार पर:\n\n" + answer
-            elif language == "Telugu":
-                final_answer = "అధికారిక పత్రాల ఆధారంగా:\n\n" + answer
-            else:
-                final_answer = "Based on official documents:\n\n" + answer
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + " "
 
-            st.markdown("### 🤖 Answer")
-            st.markdown(
-                f"""
-                <div class='main-box'>
-                    <p style='font-size:17px;line-height:1.7;'>{final_answer}</p>
-                </div>
-                """,
-                unsafe_allow_html=True
+            text = re.sub(r"\s+", " ", text).strip()
+
+            if not text:
+                st.error("No readable text found in PDF.")
+                st.stop()
+
+            # Faster chunking
+            chunks = []
+
+            chunk_size = 1000
+
+            for i in range(0, len(text), chunk_size):
+                chunk = text[i:i + chunk_size].strip()
+
+                if len(chunk) > 100:
+                    chunks.append(chunk)
+
+            embeddings = create_embeddings(chunks)
+
+            dimension = embeddings.shape[1]
+
+            index = faiss.IndexFlatL2(dimension)
+
+            index.add(
+                embeddings.astype("float32")
             )
 
-            if sources:
-                st.markdown("### 📌 Retrieved Sources")
-                for i, (score, para) in enumerate(sources, start=1):
-                    st.markdown(
-                        f"""
-                        <div class='source-box'>
-                            <b>Source {i}</b> | Match Score: {score}<br><br>
-                            {para}
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
+            st.session_state.index = index
+            st.session_state.chunks = chunks
+            st.session_state.processed_pdf = pdf.name
 
-        with st.expander("📄 View Document Preview"):
-            st.text_area("Preview", text[:4000], height=300)
+        st.success("PDF processed successfully!")
 
-else:
-    st.info("Upload an official PDF or TXT document to begin.")
+    index = st.session_state.index
+    chunks = st.session_state.chunks
+
+    question = st.text_input("Ask your question")
+
+    if question:
+
+        try:
+            question_en = GoogleTranslator(
+                source="auto",
+                target="en"
+            ).translate(question)
+        except:
+            question_en = question
+
+        q_embedding = model.encode(
+            [question_en],
+            convert_to_numpy=True
+        )
+
+        distances, indices = index.search(
+            q_embedding.astype("float32"),
+            1
+        )
+
+        answer = chunks[indices[0][0]]
+
+        st.subheader("🌍 Answers")
+
+        languages = {
+            "English": "en",
+            "తెలుగు (Telugu)": "te",
+            "हिन्दी (Hindi)": "hi",
+            "தமிழ் (Tamil)": "ta",
+            "ಕನ್ನಡ (Kannada)": "kn"
+        }
+
+        for title, code in languages.items():
+
+            try:
+                if code == "en":
+                    translated = answer
+                else:
+                    translated = GoogleTranslator(
+                        source="en",
+                        target=code
+                    ).translate(answer)
+
+                st.markdown(f"### {title}")
+                st.write(translated)
+
+            except:
+                st.markdown(f"### {title}")
+                st.write(answer)
+
+        with st.expander("📖 Source Text"):
+            st.write(answer)
